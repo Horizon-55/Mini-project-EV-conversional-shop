@@ -1,0 +1,28 @@
+## .NET & Visual Studio / Rider
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+.vscode/
+
+## Docker & Local Data
+*.log
+.env
+
+## OS generated
+[Tt]humbs.db
+[Ee]sThumbs.db
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+[Dd]esktop.ini
+.DS_Store
+
+##docs files ##
+docs/lab1-answers.md
