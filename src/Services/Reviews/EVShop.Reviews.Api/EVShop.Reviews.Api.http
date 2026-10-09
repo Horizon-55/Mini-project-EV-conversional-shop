@@ -1,0 +1,6 @@
+@EVShop.Reviews.Api_HostAddress = http://localhost:5146
+
+GET {{EVShop.Reviews.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

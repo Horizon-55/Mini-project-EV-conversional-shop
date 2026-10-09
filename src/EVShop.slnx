@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/BuildingBlocks/">
+    <Project Path="BuildingBlocks/EVShop.Shared/EVShop.Shared.csproj" />
+  </Folder>
+  <Folder Name="/Services/" />
+  <Folder Name="/Services/Catalog/">
+    <Project Path="Services/Catalog/EVShop.Catalog.Api/EVShop.Catalog.Api.csproj" />
+  </Folder>
+  <Folder Name="/Services/Ordering/">
+    <Project Path="Services/Ordering/EVShop.Ordering.Api/EVShop.Ordering.Api.csproj" />
+  </Folder>
+  <Folder Name="/Services/Reviews/">
+    <Project Path="Services/Reviews/EVShop.Reviews.Api/EVShop.Reviews.Api.csproj" />
+  </Folder>
+</Solution>
