@@ -18,6 +18,17 @@ public class CustomersController : ControllerBase
     }
 
     /// <summary>
+    /// Отримати список усіх клієнтів (чистий ADO.NET)
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(IReadOnlyList<CustomerDto>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<CustomerDto>>> GetAll(CancellationToken ct)
+    {
+        var customers = await _customerService.GetAllAsync(ct);
+        return Ok(customers);
+    }
+
+    /// <summary>
     /// Отримати дані клієнта за ID (демонструє роботу репозиторію на чистому ADO.NET)
     /// </summary>
     [HttpGet("{id:long}")]

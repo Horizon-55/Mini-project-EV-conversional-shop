@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Diagnostics;
 namespace EVShop.Ordering.Api.Middleware;
 
 // Централізований обробник доменних помилок у стандарті RFC 9457 (ProblemDetails)
-// Вимога D методички (стор. 12-13)
 public sealed class DomainExceptionHandler(IProblemDetailsService problemDetails) : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(

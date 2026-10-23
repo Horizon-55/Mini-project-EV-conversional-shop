@@ -23,6 +23,12 @@ public class CustomerService : ICustomerService
         return customer == null ? null : _mapper.Map<CustomerDto>(customer);
     }
 
+    public async Task<IReadOnlyList<CustomerDto>> GetAllAsync(CancellationToken ct = default)
+    {
+        var customers = await _uow.Customers.GetAllAsync(ct);
+        return _mapper.Map<IReadOnlyList<CustomerDto>>(customers);
+    }
+
     public async Task<CustomerDto> CreateAsync(CreateCustomerDto input, CancellationToken ct = default)
     {
         var customer = new Customer

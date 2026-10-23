@@ -35,7 +35,17 @@ builder.Services.AddSingleton<IMapper>(sp =>
     return mapperConfig.CreateMapper();
 });
 
-// 5. Контролери та централізована обробка ProblemDetails (Крок D)
+// 5. Контролери, CORS та централізована обробка ProblemDetails (Крок D)
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
 builder.Services.AddControllers();
 
 builder.Services.AddProblemDetails(options =>
@@ -64,6 +74,8 @@ var app = builder.Build();
 // Конвеєр обробки запитів (Middleware Pipeline)
 app.UseExceptionHandler();
 
+app.UseCors();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -73,8 +85,10 @@ if (app.Environment.IsDevelopment())
         c.RoutePrefix = "swagger";
     });
 }
-
-app.UseHttpsRedirection();
+else
+{
+    app.UseHttpsRedirection();
+}
 
 app.MapControllers();
 

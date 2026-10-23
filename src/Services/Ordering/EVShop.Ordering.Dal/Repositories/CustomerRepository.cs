@@ -50,6 +50,27 @@ public sealed class CustomerRepository : RepositoryBase, ICustomerRepository
         return MapCustomer(reader);
     }
 
+    public async Task<IReadOnlyList<Customer>> GetAllAsync(CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT Id, Email, FullName, PhoneNumber, CreatedAt, CreatedBy, UpdatedAt, UpdatedBy, IsDeleted
+            FROM dbo.Customers 
+            WHERE IsDeleted = 0
+            ORDER BY Id;";
+
+        await EnsureOpenAsync(ct);
+        await using var command = new SqlCommand(sql, Connection, Transaction);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+
+        var list = new List<Customer>();
+        while (await reader.ReadAsync(ct))
+        {
+            list.Add(MapCustomer(reader));
+        }
+
+        return list;
+    }
+
     public async Task<long> AddAsync(Customer customer, CancellationToken ct = default)
     {
         const string sql = @"
