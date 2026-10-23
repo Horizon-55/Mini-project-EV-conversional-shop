@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Services\Ordering\EVShop.Ordering.Api\EVShop.Ordering.Api.csproj" />
+    <ProjectReference Include="..\Services\Catalog\EVShop.Catalog.Api\EVShop.Catalog.Api.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
