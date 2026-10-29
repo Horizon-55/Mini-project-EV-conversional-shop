@@ -10,4 +10,5 @@ public interface IProductService
     Task<ProductDto> UpdatePriceAsync(int id, decimal newPrice, CancellationToken ct = default);
     Task<ProductDto> AddStockAsync(int id, int quantity, CancellationToken ct = default);
     Task<ProductDto> RemoveStockAsync(int id, int quantity, CancellationToken ct = default);
+    Task DeleteAsync(int id, CancellationToken ct = default);
 }

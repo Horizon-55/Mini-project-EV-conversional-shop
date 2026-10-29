@@ -125,4 +125,13 @@ public class ProductService : IProductService
         var updated = await _uow.Products.GetWithDetailsAsync(product.Id, ct);
         return _mapper.Map<ProductDto>(updated ?? product);
     }
+
+    public async Task DeleteAsync(int id, CancellationToken ct = default)
+    {
+        var product = await _uow.Products.GetByIdAsync(id, ct)
+            ?? throw new EntityNotFoundException($"Товар з ID {id} не знайдено");
+
+        _uow.Products.Delete(product);
+        await _uow.SaveChangesAsync(ct);
+    }
 }

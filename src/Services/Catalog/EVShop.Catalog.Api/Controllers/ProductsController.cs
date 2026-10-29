@@ -120,4 +120,16 @@ public class ProductsController : ControllerBase
         var updated = await _productService.RemoveStockAsync(id, input.Quantity, ct);
         return Ok(updated);
     }
+
+    /// <summary>
+    /// Видалити товар за ID (демонстрація повернення статусу 204 No Content)
+    /// </summary>
+    [HttpDelete("{id:int}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(int id, CancellationToken ct)
+    {
+        await _productService.DeleteAsync(id, ct);
+        return NoContent();
+    }
 }

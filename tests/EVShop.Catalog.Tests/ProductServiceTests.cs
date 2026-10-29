@@ -79,4 +79,32 @@ public class ProductServiceTests
         await Assert.ThrowsAsync<EntityNotFoundException>(() =>
             _service.RemoveStockAsync(999, 5));
     }
+
+    [Fact]
+    public async Task DeleteAsync_WhenProductNotFound_ShouldThrowEntityNotFoundException()
+    {
+        // Arrange
+        _uowMock.Setup(u => u.Products.GetByIdAsync(999, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Product?)null);
+
+        // Act & Assert
+        await Assert.ThrowsAsync<EntityNotFoundException>(() =>
+            _service.DeleteAsync(999));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WhenProductExists_ShouldDeleteAndSaveChanges()
+    {
+        // Arrange
+        var product = new Product("Motor", "MOT-1", 1000m);
+        _uowMock.Setup(u => u.Products.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(product);
+
+        // Act
+        await _service.DeleteAsync(1);
+
+        // Assert
+        _uowMock.Verify(u => u.Products.Delete(product), Times.Once);
+        _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
 }
