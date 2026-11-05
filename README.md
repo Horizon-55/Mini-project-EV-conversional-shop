@@ -730,4 +730,282 @@ curl -X GET "http://localhost:5242/api/products/99999" \
 2. **Легкість Unit-тестування:** Специфікацію можна протестувати окремо від бази даних або ORM, перевіривши стан критеріїв (`Criteria`, `Includes`, `OrderBy`).
 3. **Тонкі репозиторії та сервіси:** Репозиторію не потрібно плодити десятки методів типу `GetProductsByPriceAndBrandAndCategoryPaged(...)`. Репозиторій має лише універсальний метод `ListAsync(ISpecification<T> spec)`, що задовольняє принцип Open/Closed (OCP).
 
+---
+
+# Лабораторна робота №4: Clean Architecture на базі MongoDB, CQRS та патерну Mediator
+
+**Дисципліна:** Технології .NET розробки Web-додатків / Розробка додатків на платформі .NET  
+**Предметна область:** EV Conversional Shop — Сервіс відгуків та обговорень (`EVShop.Reviews`)  
+**Гілка роботи:** `lab-04`
+
+---
+
+## 1. Архітектурний шаблон Clean Architecture
+
+Сервіс `EVShop.Reviews` спроєктовано за принципами **Clean Architecture (Onion / Hexagonal Architecture)**.  
+Головний закон чистої архітектури — **Правило залежностей (The Dependency Rule)**: залежності в коді спрямовані виключно ззовні всередину. Внутрішні шари нічого не знають про зовнішні.
+
+```mermaid
+graph TD
+    UI["Presentation (EVShop.Reviews.Api)<br/>• Controllers<br/>• DomainExceptionHandler (RFC 9457)<br/>• Swagger & Serilog"]
+    INFRA["Infrastructure (EVShop.Reviews.Infrastructure)<br/>• MongoDbContext & MongoClient<br/>• ReviewRepository & ReviewQueries<br/>• BsonClassMap Mappings<br/>• IndexCreationService & ReviewSeeder"]
+    APP["Application (EVShop.Reviews.Application)<br/>• CQRS Commands & Queries (MediatR)<br/>• Pipeline Behaviors (Logging -> Validation -> Performance)<br/>• FluentValidation Validators<br/>• DTOs & AutoMapper Profile"]
+    DOMAIN["Domain (EVShop.Reviews.Domain)<br/>• Entities (Review, Comment)<br/>• Value Objects (Author)<br/>• Domain Exceptions<br/>• Repository Interfaces (IReviewRepository)<br/>• ZERO external dependencies"]
+
+    UI --> APP
+    UI --> INFRA
+    INFRA --> APP
+    INFRA --> DOMAIN
+    APP --> DOMAIN
+```
+
+### Структура проєктів та відповідальність шарів
+
+| Шар / Проєкт | Призначення та склад | Залежності |
+| :--- | :--- | :--- |
+| **`EVShop.Reviews.Domain`** | Ядро бізнесу: Rich Domain Model `Review`, `Comment`, Value Object `Author`, базові сутності `BaseEntity`, `ValueObject`, доменні винятки, інтерфейс репозиторію `IReviewRepository`. | **0 проєктів** (лише `MongoDB.Bson` для `ObjectId`, без `MongoDB.Driver`) |
+| **`EVShop.Reviews.Application`** | Сценарії використання (Use Cases): команди та запити CQRS (`CreateReview`, `UpdateReview`, `DeleteReview`, `AddComment`, `GetReviewById`, `GetReviewsList`, `GetAverageRating`), конвеєр MediatR Pipeline Behaviors (`LoggingBehavior`, `ValidationBehavior`, `PerformanceBehavior`), валідатори `FluentValidation`, `AutoMapper`. | `EVShop.Reviews.Domain` |
+| **`EVShop.Reviews.Infrastructure`** | Технічна реалізація взаємодії з NoSQL СУБД: `MongoDbContext`, мапінг POCO через `BsonClassMap` у `MongoMappings`, `ReviewRepository` з оптимістичною конкурентністю (`Version`), `ReviewQueries` для прямих DTO-проєкцій, фоновий сервіс індексації `IndexCreationService`, ідемпотентний сідінг `ReviewSeeder`. | `EVShop.Reviews.Application`, `EVShop.Reviews.Domain`, `MongoDB.Driver` |
+| **`EVShop.Reviews.Api`** | Тонкий presentation-шар: `ReviewsController` (викликає лише `ISender`), конфігурація DI, глобальна обробка помилок `DomainExceptionHandler` (RFC 9457 `ProblemDetails`), Swagger OpenAPI, Serilog. | `EVShop.Reviews.Application`, `EVShop.Reviews.Infrastructure`, `EVShop.Shared` |
+
+---
+
+## 2. CQRS та MediatR Pipeline Behaviors
+
+В системі впроваджено розділення операцій читання та запису (**CQRS — Command Query Responsibility Segregation**):
+- **Commands (Зміна стану):** надсилаються в `IReviewRepository` через агрегат `Review`, який валідує бізнес-правила та контролює версіонування.
+- **Queries (Читання):** оминають доменний репозиторій і безпосередньо звертаються до `IReviewQueries`, використовуючи нативні проєкції та фільтри MongoDB для максимальної швидкодії.
+
+Кожен запит проходить через ланцюжок **Pipeline Behaviors** у строго фіксованому порядку:
+$$\text{HTTP Request} \longrightarrow \mathbf{LoggingBehavior} \longrightarrow \mathbf{ValidationBehavior} \longrightarrow \mathbf{PerformanceBehavior} \longrightarrow \text{Handler} \longrightarrow \text{MongoDB}$$
+
+1. **`LoggingBehavior` (зовнішній):** логує назву запиту, вхідний payload та результат виконання у Serilog.
+2. **`ValidationBehavior` (середній):** знаходить усі зареєстровані валідатори `FluentValidation` для команди/запиту. Якщо є порушення правил, збирає помилки у словник і викидає `ValidationException`, **не викликаючи сам обробник Handler**.
+3. **`PerformanceBehavior` (внутрішній, біля обробника):** заміряє час виконання через `Stopwatch`. Якщо тривалість перевищує 500 мс, генерує попередження `LogWarning` про аномально повільний запит.
+
+---
+
+## 3. Модель даних MongoDB та оптимізація індексами
+
+Колекція `reviews` у базі даних `evshop_reviews`:
+
+```json
+{
+  "_id": ObjectId("672a1e8a0000000000000001"),
+  "productId": NumberLong(1),
+  "productName": "Nissan Leaf 40kWh 2021",
+  "author": {
+    "userId": "usr_101",
+    "displayName": "Олександр Коваленко",
+    "isVerifiedBuyer": true
+  },
+  "rating": 5,
+  "text": "Чудовий міський електромобіль! Реальний запас ходу влітку близько 240 км.",
+  "version": 0,
+  "createdAt": ISODate("2026-11-05T12:00:00Z"),
+  "updatedAt": null,
+  "comments": [
+    {
+      "author": {
+        "userId": "mod_1",
+        "displayName": "Менеджер EVShop",
+        "isVerifiedBuyer": false
+      },
+      "text": "Дякуємо за відгук, Олександре!",
+      "createdAt": ISODate("2026-11-05T12:30:00Z")
+    }
+  ]
+}
+```
+
+### Автоматичні індекси (`IndexCreationService`)
+
+1. **Compound Index:** `{ productId: 1, createdAt: -1 }` (ім'я `idx_reviews_product_created`) — оптимізує сортування відгуків конкретного товару від найновіших до найстаріших.
+2. **Unique Compound Index:** `{ productId: 1, "author.userId": 1 }` (ім'я `idx_reviews_unique_user_product`, `Unique = true`) — гарантує на рівні СУБД, що один користувач може залишити лише один відгук на один товар.
+3. **Text Index:** `{ text: "text" }` (ім'я `idx_reviews_text_search`) — забезпечує швидкий повнотекстовий пошук за вмістом відгуків.
+
+---
+
+## 4. Оптимістична конкурентність (Optimistic Concurrency)
+
+Для запобігання втраті даних при одночасному редагуванні (Lost Update Problem) сутність `Review` має властивість `Version`:
+1. При виклику `GET /api/reviews/{id}` клієнт отримує поточний номер версії у заголовку відповіді:
+   `ETag: "0"`
+2. Під час надсилання `PUT /api/reviews/{id}` клієнт передає поле `expectedVersion`:
+   ```json
+   {
+     "rating": 5,
+     "text": "Оновлений текст відгуку",
+     "expectedVersion": 0
+   }
+   ```
+3. Репозиторій виконує атомарну заміну з фільтром версії:
+   ```csharp
+   var filter = Builders<Review>.Filter.And(
+       Builders<Review>.Filter.Eq(r => r.Id, review.Id),
+       Builders<Review>.Filter.Eq(r => r.Version, expectedVersion)
+   );
+   review.BumpVersion(); // version -> 1
+   var result = await _context.Reviews.ReplaceOneAsync(filter, review);
+   if (result.MatchedCount == 0)
+       throw new ConflictException("Optimistic concurrency violation: review was modified by another transaction.");
+   ```
+4. Якщо паралельний потік уже змінив версію, клієнт отримує **HTTP 409 Conflict** у форматі RFC 9457 `ProblemDetails`.
+
+---
+
+## 5. Централізована обробка помилок (RFC 9457 `ProblemDetails`)
+
+Усі винятки автоматично перехоплюються через `DomainExceptionHandler` та мапляться на статус-коди HTTP:
+
+| Виняток | HTTP-статус | Пояснення |
+| :--- | :--- | :--- |
+| `ValidationException` (FluentValidation) | **400 Bad Request** | Помилки валідації вхідних полів DTO (`errors: { Field: [...] }`) |
+| `DomainException` | **400 Bad Request** | Порушення інваріантів бізнес-моделі (наприклад, рейтинг поза межами 1..5) |
+| `NotFoundException` | **404 Not Found** | Запитаного відгуку чи ресурсу не існує в системі |
+| `ConflictException` | **409 Conflict** | Конфлікт оптимістичної версії або дублікат відгуку від користувача |
+| `MongoWriteException` (DuplicateKey) | **409 Conflict** | Порушення унікального складеного індексу в MongoDB |
+| `MongoConnectionException` / `Timeout` | **503 Service Unavailable** | Відсутнє з'єднання з екземпляром MongoDB або таймаут пулу з'єднань |
+| Неперехоплений `Exception` | **500 Internal Server Error** | Непередбачена критична помилка сервера |
+
+---
+
+## 6. Приклади перевірки API (cURL)
+
+### Отримання списку відгуків з пагінацією та пошуком
+```bash
+curl -X GET "http://localhost:5146/api/reviews?productId=1&page=1&pageSize=10" -H "Accept: application/json"
+```
+
+### Створення нового відгуку (успіх: 201 Created + ETag)
+```bash
+curl -X POST "http://localhost:5146/api/reviews" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "productId": 2,
+    "productName": "Tesla Model 3 Long Range 2022",
+    "author": {
+      "userId": "usr_999",
+      "displayName": "Віктор",
+      "isVerifiedBuyer": true
+    },
+    "rating": 5,
+    "text": "Неймовірна керованість і швидкість!"
+  }'
+```
+
+### Перевірка захисту від дублікатів (повторний POST тим самим автором: 400 або 409)
+```bash
+curl -X POST "http://localhost:5146/api/reviews" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "productId": 2,
+    "productName": "Tesla Model 3 Long Range 2022",
+    "author": {
+      "userId": "usr_999",
+      "displayName": "Віктор",
+      "isVerifiedBuyer": true
+    },
+    "rating": 4,
+    "text": "Спроба написати другий відгук"
+  }'
+```
+
+### Додавання коментаря до відгуку (201 Created)
+```bash
+curl -X POST "http://localhost:5146/api/reviews/672a1e8a0000000000000001/comments" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "author": {
+      "userId": "usr_500",
+      "displayName": "Експерт EV",
+      "isVerifiedBuyer": false
+    },
+    "text": "Повністю погоджуюсь з автором щодо запасу ходу!"
+  }'
+```
+
+### Оновлення відгуку з контролем версії (200 OK або 409 Conflict)
+```bash
+curl -X PUT "http://localhost:5146/api/reviews/672a1e8a0000000000000001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rating": 5,
+    "text": "Оновлений коментар після 10,000 км пробігу.",
+    "expectedVersion": 0
+  }'
+```
+
+---
+
+## 7. Відповіді на контрольні запитання (сторінка 22 методички)
+
+### 1. Сформулюйте правило залежностей Clean Architecture. Чим вона відрізняється від тришарової архітектури з Лаб. 02–03?
+**Відповідь:**
+- **Правило залежностей (Dependency Rule):** Вихідний код і залежності проєктів повинні вказувати виключно всередину, у напрямку до доменних сутностей і бізнес-правил. Внутрішні шари нічого не знають про зовнішні (Domain не знає ні про EF Core / MongoDB, ні про ASP.NET Core, ні про Web UI).
+- **Відмінність від тришарової архітектури (Лаб 2–3):** У класичній тришаровій моделі шар бізнес-логіки (BLL) напряму посилався на шар доступу до даних (DAL), а сутності часто прив'язувалися до таблиць бази даних. У Clean Architecture відбувається **інверсія залежностей (DIP)**: домен визначає абстрактні інтерфейси (`IReviewRepository`), а інфраструктурний шар (Infrastructure) залежить від домену і реалізує ці інтерфейси. База даних стає зовнішньою деталлю реалізації.
+
+### 2. Чому Domain-шар не повинен мати зовнішніх залежностей, навіть від `MongoDB.Driver`?
+**Відповідь:**
+1. **Ізоляція бізнес-логіки (Core Purity):** Доменний шар є серцем програми. Він містить сутності, агрегати та бізнес-інваріанти, які не повинні залежати від зміни технологічного стека, версій сторонніх бібліотек або вибору СУБД.
+2. **Незалежність від механізму зберігання:** Якщо завтра виникне потреба перевести збереження відгуків на PostgreSQL, CosmosDB чи Redis, або змінити драйвер, доменні класи та бізнес-правила залишаться недоторканими.
+3. **Легкість тестування:** Сутності тестуються чистими модульними тестами (Unit Tests) у мілісекунди без створення моків драйверів чи підключення до бази.
+4. *Примітка:* Єдиний виняток — легковісний пакет `MongoDB.Bson` виключно для типу ідентифікатора `ObjectId`.
+
+### 3. Чому обробник запиту в Application звертається до `IReviewQueries`, а не до `IMongoCollection` напряму?
+**Відповідь:**
+1. **Дотримання Dependency Inversion Principle (DIP):** Шар Application не має посилання на `MongoDB.Driver` і не знає про клас `IMongoCollection`. Замість цього він працює через абстрактний контракт `IReviewQueries`.
+2. **Розділення обов'язків (CQRS):** Запити на читання проєктуються безпосередньо в оптимізовані DTO. Конкретна реалізація запитів у шарі `Infrastructure` інкапсулює складання aggregation pipeline, виклики `$match`, `$group`, проєкційні правила та курсорну пагінацію.
+3. **Тестованість:** У тестах Application-шару для перевірки `GetReviewsListQueryHandler` достатньо замокати інтерфейс `IReviewQueries`, не налаштовуючи складні виклики ланцюжків `IFindFluent` з MongoDB Driver.
+
+### 4. Чим Command відрізняється від Query у CQRS? Чому їх обробляють різні обробники?
+**Відповідь:**
+- **Command (Команда):** Виражає намір **змінити стан системи** (створити відгук, оновити текст, додати коментар, видалити). Вона мутує дані, викликає бізнес-методи сутностей, захищає інваріанти, вимагає суворого версіонування та зазвичай повертає лише ідентифікатор або статус виконання.
+- **Query (Запит):** Є **безпечною операцією читання (ідемпотентною і без побічних ефектів — Side-Effect Free)**. Вона нічого не змінює в базі даних, не потребує завантаження повного Rich Domain Entity у пам'ять і повертає готові проєкції DTO для відображення в UI.
+- **Чому різні обробники:** Це виключає конфлікти оптимізації. Модель читання (Read Model) можна оптимізувати агрегаціями, денормалізацією та індексами без ризику зламати логіку валідації та збереження транзакційного запису (Write Model).
+
+### 5. Що таке Value Object? Чому він має бути незмінним і порівнюватися за значенням?
+**Відповідь:**
+- **Value Object (Об'єкт-значення):** Це доменний концепт, який описує характеристику чи атрибут сутності і **не має власного унікального ідентифікатора** (наприклад, `Author(UserId, DisplayName, IsVerifiedBuyer)`).
+- **Чому незмінний (Immutable):** Незмінність гарантує потокобезпечність (Thread-safety) і захищає від небажаних побічних ефектів (aliasing bugs). Якщо потрібно змінити значення, створюється новий екземпляр Value Object.
+- **Порівняння за значенням:** Два Value Objects вважаються еквівалентними, якщо співпадають значення всіх їхніх компонентів (`GetEqualityComponents()`), а не посилання в пам'яті. Наприклад, два автори з однаковим `UserId` та `DisplayName` є ідентичними незалежно від адреси в купі.
+
+### 6. Чому мапінг BSON налаштовується в Infrastructure через `BsonClassMap`, а не атрибутами в доменних класах?
+**Відповідь:**
+1. **Чистота домену (Persistence Ignorance):** Використання атрибутів типу `[BsonId]`, `[BsonElement("product_id")]`, `[BsonIgnore]` «забруднює» доменну сутність знаннями про конкретну NoSQL-технологію та бібліотеку зберігання.
+2. **Інкапсуляція приватних членів:** Доменна сутність `Review` має приватне поле `_comments` та публічний read-only гетер `Comments`. За допомогою `BsonClassMap.RegisterClassMap<Review>(cm => { cm.MapField("_comments").SetElementName("comments"); })` інфраструктурний шар конфігурує збереження внутрішнього стану без відкриття публічних setter-ів у домені.
+3. **Гнучкість конфігурації:** Правила найменування (наприклад, конвенція `camelCase`) реєструються глобально в одному місці (`MongoMappings.cs`) без необхідності проставляти атрибути над кожною властивістю кожного класу.
+
+### 7. Що таке Pipeline Behavior і чим він схожий на middleware ASP.NET Core? Чи важливий порядок behaviors?
+**Відповідь:**
+- **Pipeline Behavior у MediatR:** Це реалізація патерну **Chain of Responsibility** (ланцюжок обов'язків) навколо виконання команд і запитів на рівні шару додатку. Він дозволяє реалізувати наскрізну функціональність (Cross-Cutting Concerns) — валідацію, логування, аудит, заміри продуктивності — в одному централізованому місці замість дублювання в кожному обробнику.
+- **Схожість із Middleware:** Обидва механізми працюють за принципом цибулини (Onion pipeline): отримують запит, виконують передумову, викликають делегат `next()`, перехоплюють винятки та виконують післяумову. Відмінність у тому, що Middleware діє на рівні HTTP-запиту, а Pipeline Behavior — на рівні доменних команд/запитів MediatR усередині бізнес-шару.
+- **Важливість порядку:** Порядок виклику критичний!
+  1. `LoggingBehavior` повинен бути першим (зовнішнім), щоб залогувати сам факт надходження команди та перехопити будь-які подальші помилки.
+  2. `ValidationBehavior` має бути перед обробником, щоб перевірити вхідні дані і зупинити виконання команди до старту бізнес-логіки.
+  3. `PerformanceBehavior` ставиться безпосередньо перед викликом Handler, щоб заміряти чистий час роботи обробника і запитів до бази.
+
+### 8. Як версія документа і заголовки ETag/If-Match захищають від втрати одночасних змін?
+**Відповідь:**
+- **Проблема втрати змін (Lost Update):** Якщо два користувачі одночасно відкривають один відгук, модифікують його та зберігають, останній запис без контролю версій непомітно перезапише зміни першого.
+- **Захист через `Version`:** Кожен документ має поле `version` (ціле число, починаючи з 0). При кожному оновленні сутність збільшує версію: `BumpVersion()`.
+- **Запит Replace з умовою:** Оновлення в MongoDB виконується через фільтр `{ _id: id, version: expectedVersion }`. Якщо інший процес уже встиг оновити документ, версія в базі збільшилась, фільтр не знайде жодного запису (`MatchedCount == 0`), і сервер кине `ConflictException` (**HTTP 409 Conflict**).
+- **Заголовки ETag / If-Match:** При читанні API повертає версію в заголовку `ETag: "1"`. Клієнт при оновленні передає її назад, що дозволяє веб-інфраструктурі та клієнтським додаткам коректно виявляти конфлікти синхронізації.
+
+### 9. Чим курсорна пагінація відрізняється від skip/limit і коли вона ефективніша?
+**Відповідь:**
+- **Пагінація через `skip` / `limit` (Offset-based):** СУБД для повернення 10 запитів зі сторінки №1000 повинна відсканувати та пропустити $1000 \times 10 = 10\,000$ документів: `.Skip(10000).Limit(10)`. На великих обсягах даних (мільйони документів) це спричиняє величезне навантаження на диск і різке падіння продуктивності $O(N)$. Крім того, при паралельному додаванні нових відгуків виникає ефект «зсуву» записів між сторінками.
+- **Курсорна пагінація (Keyset / Cursor-based):** Замість зміщення використовується унікальний впорядкований маркер останнього переглянутого елемента (наприклад, `_id` документа MongoDB, який монотонно зростає з часом):
+  `filter &= Builders<Review>.Filter.Lt(r => r.Id, lastSeenId);`
+  База миттєво знаходить наступні `limit` документів через B-Tree індекс за час $O(\log N)$, незалежно від того, це перша чи мільйонна сторінка.
+- **Коли ефективніша:** Для нескінченних стрічок (Infinite Scroll), великих каталогів товарів, стрічок новин та мобільних додатків із мільйонами записів.
+
+### 10. Навіщо ProductName денормалізовано в документі Review, якщо ProductId і так посилається на Каталог?
+**Відповідь:**
+1. **Відсутність міжсервісних JOIN:** Відгуки знаходяться в MongoDB (`evshop_reviews`), а каталог товарів — у реляційній базі SQL Server (`EVShop_Catalog`). Виконати SQL JOIN між різними базами та різними СУБД фізично неможливо.
+2. **Продуктивність читання (Read Performance):** Коли користувач відкриває список своїх відгуків у кабінеті або модератор переглядає останні скарги, назва товару (`ProductName`) уже зберігається всередині документа `Review`. Сервісу відгуків не потрібно робити дорогі міжсервісні мережеві HTTP/gRPC-запити до сервісу Каталогу для кожного відгуку.
+3. **Історичний знімок (Snapshot Consistency):** Назва товару на момент написання відгуку фіксується. Навіть якщо товар у каталозі згодом буде перейменовано, перенесено в архів чи видалено, відгук збереже контекст того пристрою, про який писав клієнт.
+
+
+
 
