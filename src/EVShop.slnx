@@ -8,6 +8,9 @@
   </Folder>
   <Folder Name="/Services/Ordering/">
     <Project Path="Services/Ordering/EVShop.Ordering.Api/EVShop.Ordering.Api.csproj" />
+    <Project Path="Services/Ordering/EVShop.Ordering.Bll/EVShop.Ordering.Bll.csproj" />
+    <Project Path="Services/Ordering/EVShop.Ordering.Dal/EVShop.Ordering.Dal.csproj" />
+    <Project Path="Services/Ordering/EVShop.Ordering.Domain/EVShop.Ordering.Domain.csproj" />
   </Folder>
   <Folder Name="/Services/Reviews/">
     <Project Path="Services/Reviews/EVShop.Reviews.Api/EVShop.Reviews.Api.csproj" />
